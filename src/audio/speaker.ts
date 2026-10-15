@@ -123,6 +123,10 @@ export function createAudioSpeaker(
   const platform = process.platform;
 
   const emitter = new EventEmitter();
+  // Node throws an uncaught exception when "error" is emitted with no
+  // listener. Attach a no-op so a stray emit (e.g. player stderr chatter
+  // before index.ts registers its handler) can never take the TUI down.
+  emitter.on("error", () => {});
   let proc: ChildProcess | null = null;
   let playing = false;
   let disposed = false;
@@ -164,10 +168,39 @@ export function createAudioSpeaker(
     playing = true;
     const thisProc = proc;
 
-    thisProc.stderr!.on("data", (data: Buffer) => {
-      const msg = data.toString().trim();
-      if (msg) {
+    // aplay prints informational banners to stderr on every start — not
+    // real errors. Only forward lines that look like failures.
+    const forwardIfFailure = (msg: string): void => {
+      if (
+        msg &&
+        !msg.startsWith("Playing raw data") &&
+        !msg.startsWith("Playing WAVE")
+      ) {
         emitter.emit("error", new Error(`[${desc.command}] ${msg}`));
+      }
+    };
+    // Filter line by line: stderr chunks split at arbitrary byte
+    // boundaries, so a per-chunk prefix match misses lines cut in half
+    // (e.g. "Playing raw data 'stdin' : ... Rate 2400" + "0 Hz, Mono").
+    let stderrBuf = "";
+    const consumeStderr = (text: string): void => {
+      stderrBuf += text;
+      const lines = stderrBuf.split(/\r?\n/);
+      stderrBuf = lines.pop() ?? "";
+      for (const line of lines) {
+        forwardIfFailure(line.trim());
+      }
+    };
+
+    thisProc.stderr!.on("data", (data: Buffer) => {
+      consumeStderr(data.toString());
+    });
+    thisProc.stderr!.on("end", () => {
+      // Flush a final line that arrived without a trailing newline.
+      if (stderrBuf) {
+        const last = stderrBuf;
+        stderrBuf = "";
+        forwardIfFailure(last.trim());
       }
     });
 
