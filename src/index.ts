@@ -11,7 +11,6 @@
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { matchesKey } from "@mariozechner/pi-tui";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -723,60 +722,57 @@ export default function piVoice(pi: ExtensionAPI) {
 
   // ── Keyboard Handling ──────────────────────────────────────────────
 
-  pi.on("session_start", async (_event, ctx) => {
-    // Register keybinding handler via widget with input handling
-    ctx.ui.setWidget("voice-keys", (_tui: any, _theme: any) => ({
-      render: () => [],
-      invalidate: () => {},
-      handleInput: (data: string) => {
-        // Alt+V — Toggle mic
-        if (matchesKey(data, config.keybindings.toggleMic)) {
-          if (state.isListening) {
-            stopListening(ctx);
-          } else {
-            startListening(ctx);
-          }
-          return;
-        }
+  // pi >= 1.2 routes keyboard input only to the focused component, so a
+  // widget's handleInput is never invoked. registerShortcut is the
+  // supported mechanism for extension keybindings.
+  pi.registerShortcut(config.keybindings.toggleMic, {
+    description: "pi-voice: toggle microphone",
+    handler: (ctx) => {
+      if (state.isListening) {
+        stopListening(ctx);
+      } else {
+        startListening(ctx);
+      }
+    },
+  });
 
-        // Alt+M — Mute/unmute TTS
-        if (matchesKey(data, config.keybindings.muteTTS)) {
-          state.ttsMuted = !state.ttsMuted;
-          if (state.ttsMuted && state.isSpeaking) {
-            stopTTS();
-          }
-          updateStatus();
-          statusBar?.flash(
-            state.ttsMuted ? "🔇 TTS muted" : "🔊 TTS unmuted",
-            state.ttsMuted ? "warning" : "success"
-          );
-          return;
-        }
+  pi.registerShortcut(config.keybindings.muteTTS, {
+    description: "pi-voice: mute/unmute TTS",
+    handler: () => {
+      state.ttsMuted = !state.ttsMuted;
+      if (state.ttsMuted && state.isSpeaking) {
+        stopTTS();
+      }
+      updateStatus();
+      statusBar?.flash(
+        state.ttsMuted ? "🔇 TTS muted" : "🔊 TTS unmuted",
+        state.ttsMuted ? "warning" : "success"
+      );
+    },
+  });
 
-        // Alt+Space — Push-to-talk
-        if (matchesKey(data, config.keybindings.pushToTalk)) {
-          if (config.stt.mode === "push-to-talk") {
-            if (state.isListening) {
-              // This is the release — stop
-              pushToTalkHeld = false;
-              stopListening(ctx);
-            } else if (!pushToTalkHeld) {
-              // This is the press — start
-              pushToTalkHeld = true;
-              startListening(ctx);
-            }
-          } else {
-            // In other modes, Alt+Space acts as toggle
-            if (state.isListening) {
-              stopListening(ctx);
-            } else {
-              startListening(ctx);
-            }
-          }
+  pi.registerShortcut(config.keybindings.pushToTalk, {
+    description: "pi-voice: push-to-talk / toggle",
+    handler: (ctx) => {
+      if (config.stt.mode === "push-to-talk") {
+        if (state.isListening) {
+          // This is the release — stop
+          pushToTalkHeld = false;
+          stopListening(ctx);
+        } else if (!pushToTalkHeld) {
+          // This is the press — start
+          pushToTalkHeld = true;
+          startListening(ctx);
         }
-      },
-      wantsKeyRelease: true,
-    }));
+      } else {
+        // In other modes, the push-to-talk key acts as toggle
+        if (state.isListening) {
+          stopListening(ctx);
+        } else {
+          startListening(ctx);
+        }
+      }
+    },
   });
 
   // ══════════════════════════════════════════════════════════════════════

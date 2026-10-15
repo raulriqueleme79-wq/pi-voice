@@ -87,6 +87,15 @@ declare module "@mariozechner/pi-coding-agent" {
     /** Register a custom tool callable by the LLM. */
     registerTool(tool: Record<string, unknown>): void;
 
+    /** Register a keyboard shortcut (pi >= 1.2). */
+    registerShortcut(
+      shortcut: string,
+      options: {
+        description?: string;
+        handler: (ctx: ExtensionContext) => Promise<void> | void;
+      },
+    ): void;
+
     /** Send a user message programmatically. */
     sendUserMessage(
       text: string | Array<Record<string, unknown>>,
