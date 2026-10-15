@@ -125,9 +125,17 @@ export function createMicRecorder(
   const platform = process.platform;
 
   const emitter = new EventEmitter();
+  // Node throws an uncaught exception when "error" is emitted with no
+  // listener. Guard against the window before index.ts registers onError.
+  emitter.on("error", () => {});
   let proc: ChildProcess | null = null;
   let recording = false;
   let disposed = false;
+  let stopping = false;
+  // True from the moment we send SIGTERM until the next start(). arecord
+  // answers our SIGTERM by printing "Aborted by signal" and exiting 1 —
+  // that exit code is the normal stop path, not a failure.
+  let sigtermed = false;
   let currentLevel = 0;
   let silenceTimer: ReturnType<typeof setTimeout> | null = null;
   let inSilence = false;
@@ -172,6 +180,7 @@ export function createMicRecorder(
     }
 
     if (!p.killed) {
+      sigtermed = true;
       p.kill("SIGTERM");
 
       // If the process hasn't exited after 500ms, force-kill.
@@ -220,7 +229,34 @@ export function createMicRecorder(
       }
 
       recording = true;
+      sigtermed = false;
       const thisProc = proc;
+
+      // arecord/sox print informational lines to stderr that are not
+      // real errors — only forward lines that look like failures.
+      // "Aborted by signal" is arecord's response to the SIGTERM that
+      // stop() itself sends — the normal stop path.
+      const forwardIfFailure = (msg: string): void => {
+        if (
+          msg &&
+          !msg.startsWith("Recording") &&
+          !msg.startsWith("Input File") &&
+          !msg.includes("Aborted by signal")
+        ) {
+          emitter.emit("error", new Error(`[${desc.command}] ${msg}`));
+        }
+      };
+      // Filter line by line: stderr chunks split at arbitrary byte
+      // boundaries, so a per-chunk match misses lines cut in half.
+      let stderrBuf = "";
+      const consumeStderr = (text: string): void => {
+        stderrBuf += text;
+        const lines = stderrBuf.split(/\r?\n/);
+        stderrBuf = lines.pop() ?? "";
+        for (const line of lines) {
+          forwardIfFailure(line.trim());
+        }
+      };
 
       thisProc.stdout!.on("data", (chunk: Buffer) => {
         if (!recording || disposed) return;
@@ -240,15 +276,14 @@ export function createMicRecorder(
       });
 
       thisProc.stderr!.on("data", (data: Buffer) => {
-        const msg = data.toString().trim();
-        // arecord/sox print informational lines to stderr that are not
-        // real errors — only forward lines that look like failures.
-        if (
-          msg &&
-          !msg.startsWith("Recording") &&
-          !msg.startsWith("Input File")
-        ) {
-          emitter.emit("error", new Error(`[${desc.command}] ${msg}`));
+        consumeStderr(data.toString());
+      });
+      thisProc.stderr!.on("end", () => {
+        // Flush a final line that arrived without a trailing newline.
+        if (stderrBuf) {
+          const last = stderrBuf;
+          stderrBuf = "";
+          forwardIfFailure(last.trim());
         }
       });
 
@@ -271,6 +306,14 @@ export function createMicRecorder(
           proc = null;
         }
         // Exit code 0 or null (killed by signal) are normal stop paths.
+        // An intentional stop() may also land here with code 1 — arecord
+        // catches our SIGTERM, prints "Aborted by signal" and exits 1.
+        // sigtermed covers the race where a new start() replaced proc
+        // before this close event fired.
+        if (stopping || (sigtermed && code === 1)) {
+          stopping = false;
+          return;
+        }
         if (code !== null && code !== 0) {
           emitter.emit(
             "error",
@@ -284,6 +327,7 @@ export function createMicRecorder(
     async stop(): Promise<void> {
       if (!recording) return;
       recording = false;
+      stopping = true;
       clearSilenceTimer();
       currentLevel = 0;
       killProc();
