@@ -775,6 +775,15 @@ export default function piVoice(pi: ExtensionAPI) {
     },
   });
 
+  // Convenience shortcut: toggle hands-free conversation mode without
+  // typing /voice conversation.
+  pi.registerShortcut("alt+c", {
+    description: "pi-voice: toggle conversation mode",
+    handler: (ctx) => {
+      toggleConversationMode(ctx);
+    },
+  });
+
   // ══════════════════════════════════════════════════════════════════════
   // COMMANDS
   // ══════════════════════════════════════════════════════════════════════
